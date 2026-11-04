@@ -36,7 +36,7 @@ $stdout.AutoFlush = $true
 $stdin = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), $enc)
 
 $global:S = @{
-    Version   = '1.1.0'
+    Version   = '1.2.0'
     Root      = $root
     Config    = $config
     Workspace = $ws

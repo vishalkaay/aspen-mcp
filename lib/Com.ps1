@@ -114,6 +114,39 @@ public static class AspCom {
         return hits;
     }
 
+    // Input fields with Aspen's own help text (attribute 19) and allowed values (attribute 5, a node
+    // whose value is a newline-separated list). Each row: {path, value, units, options, prompt, children}.
+    public static List<string[]> Describe(object n, string path, int maxDepth, string pattern, bool specifiedOnly, int max) {
+        var rows = new List<string[]>();
+        Regex rx = string.IsNullOrEmpty(pattern) ? null : new Regex(pattern, RegexOptions.IgnoreCase);
+        DescribeWalk(n, path, 0, maxDepth, rx, specifiedOnly, max, rows);
+        return rows;
+    }
+    static void DescribeWalk(object n, string path, int depth, int maxDepth, Regex rx, bool specifiedOnly, int max, List<string[]> rows) {
+        foreach (object k in Children(n)) {
+            if (rows.Count >= max) return;
+            string nm = Name(k);
+            if (nm == null || nm == "Unit Set" || nm.StartsWith("User T")) continue;
+            string kp = path + "\\" + nm;
+            object[] kids = Children(k);
+            if (kids.Length > 0 && depth + 1 < maxDepth) { DescribeWalk(k, kp, depth + 1, maxDepth, rx, specifiedOnly, max, rows); continue; }
+            string v = Text(Value(k));
+            if (specifiedOnly && v.Length == 0 && kids.Length == 0) continue;
+            string prompt = Text(Attr(k, 19));
+            if (rx != null && !rx.IsMatch(nm) && !rx.IsMatch(prompt)) continue;
+            string opts = "";
+            object o = Attr(k, 5);
+            if (o != null && !(o is string)) { try { opts = Text(Value(o)).Replace("\r", "").Replace("\n", ","); } catch { } }
+            string kidNames = "";
+            if (kids.Length > 0) {
+                var names = new List<string>();
+                for (int i = 0; i < kids.Length && i < 12; i++) names.Add(Name(kids[i]));
+                kidNames = string.Join(",", names.ToArray()) + (kids.Length > 12 ? ",..." : "");
+            }
+            rows.Add(new string[] { kp, v, Units(k) ?? "", opts, prompt, kidNames });
+        }
+    }
+
     // Leaf children of a node as name -> value (component flows, profiles ...).
     public static Dictionary<string, object> ChildValues(object n) {
         var r = new Dictionary<string, object>();

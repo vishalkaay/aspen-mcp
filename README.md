@@ -43,16 +43,16 @@ For a manual setup, add this to `claude_desktop_config.json`:
 | Area | Tools |
 |---|---|
 | Session | `aspen_new` (blank, unit set METCBAR/MET/SI/ENG), `aspen_open` (.bkp/.apw/.apwz, as a working copy), `aspen_info`, `aspen_save`, `aspen_close` |
-| Variable tree | `aspen_get` (one or many paths, with units), `aspen_set` (one, or a `{path: value}` map), `aspen_list`, `aspen_tree` (non-empty leaves of a subtree), `aspen_find` (regex on node names), `aspen_add_row` (table rows) |
+| Variable tree | `aspen_get` (one or many paths, with units), `aspen_set` (one, or a `{path: value}` map), `aspen_list`, `aspen_tree` (non-empty leaves of a subtree), `aspen_find` (regex on node names), `aspen_describe_inputs` (Aspen's help text and allowed values for every input field of any block, stream or spec), `aspen_add_row` (table rows) |
 | Flowsheet | `aspen_flowsheet` (topology), `aspen_add_components` (fluids or solids), `aspen_remove_component`, `aspen_set_property_method`, `aspen_set_units`, `aspen_add_block`, `aspen_add_stream` (material/heat/work), `aspen_connect`, `aspen_disconnect`, `aspen_delete`, `aspen_set_stream` (mole/mass/std-volume flows or fractions, any substream) |
-| Models | `aspen_radfrac` (stages, condenser, reboiler, feed stages, pressure, the two operating specs), `aspen_rstoic` (conditions plus reactions by conversion or extent) |
-| Analysis | `aspen_design_spec`, `aspen_sensitivity`, `aspen_analysis_results` (design-spec outcome, sensitivity table) |
+| Models | `aspen_radfrac` (stages, condenser, reboiler, feed stages, pressure, the two operating specs), `aspen_rstoic` (conditions plus reactions by conversion or extent), `aspen_reactions` (POWERLAW kinetic reaction sets), `aspen_kinetic_reactor` (RCSTR/RPlug: reaction sets, temperature or duty/adiabatic, volume or residence time, length/diameter/tubes) |
+| Analysis | `aspen_design_spec`, `aspen_sensitivity`, `aspen_calculator` (Fortran with import/export variables, execution point), `aspen_analysis_results` (design-spec outcome, sensitivity table, calculator values) |
 | Run | `aspen_run` (starts, waits up to 40 s, then poll; says so when Aspen skips the run for incomplete input), `aspen_status`, `aspen_stop`, `aspen_reinit`, `aspen_report` (search the .rep) |
 | Results | `aspen_streams` (T, P, vapour fraction, flows, components, solid substreams), `aspen_block_results` (scalar outputs with units), `aspen_column_results` (duties, ratios, stage T/P/L/V and x/y profiles) |
 | View | `aspen_screenshot` (PNG of the Aspen window) |
 | Files | `aspen_list_files`, `aspen_read_file` (text files: .bkp, .rep, .csv ...; read-only, no Aspen needed) |
 
-Everything in Aspen is a node in the variable tree, so anything without a dedicated tool can still be reached with `aspen_get` and `aspen_set`. For example:
+Everything in Aspen is a node in the variable tree, so anything without a dedicated tool can still be reached with `aspen_get` and `aspen_set`. `aspen_describe_inputs` shows Aspen's own help text and the allowed values for each field, so Claude can work out how to specify models that have no dedicated tool, such as Flash2, Pump, Compr, HeatX, RGibbs or Sep. For example:
 
 | What | Path |
 |---|---|
@@ -94,6 +94,12 @@ powershell -ExecutionPolicy Bypass -File tests\live.tests.ps1
 powershell -ExecutionPolicy Bypass -File tests\models.tests.ps1
 ```
 
+```bash
+powershell -ExecutionPolicy Bypass -File tests\advanced.tests.ps1
+```
+
+`advanced.tests.ps1` takes about 2 minutes. It checks the input help, a POWERLAW reaction set in an RCSTR and an RPlug (the CSTR must convert less than the plug-flow reactor), and a Fortran calculator that sets one feed flow from another.
+
 `models.tests.ps1` takes about 3 minutes. It builds a methanol/water RadFrac column and an esterification RStoic from scratch, then checks the column profile, the reactor conversion, a design spec (99 mol% methanol by reflux ratio), a sensitivity study and a solids (CISOLID) stream.
 
 Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on the `.bkp` reading tests in `protocol.tests.ps1`. `-ProtectedFile <file.bkp>` (or `ASPEN_MCP_PROTECTED_FILE`) turns on the protection tests in `live.tests.ps1`; the file must be inside a folder listed in `protected_paths`.
@@ -120,7 +126,8 @@ Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on th
 - The server opens its own Aspen window. It can't attach to an Aspen window you opened yourself, because Aspen doesn't register in the running-object table. Close the file there first, then use `aspen_open`.
 - It handles one simulation at a time per server.
 - Large flowsheets can take minutes to converge from a cold start. Use `aspen_run` with a longer `wait_seconds`, or poll `aspen_status`.
-- Dedicated tools cover RadFrac, RStoic, design specs and sensitivities. Other models (RCSTR/RPlug kinetics, HeatX, calculators, optimization) are set through `aspen_set` on their input paths.
+- Dedicated tools cover RadFrac, RStoic, kinetic RCSTR/RPlug (POWERLAW), design specs, sensitivities and calculators. Everything else (HeatX, Flash, pumps, compressors, RGibbs, LHHW kinetics, RBatch, optimization, property analysis) goes through `aspen_describe_inputs` + `aspen_set`, which works but is untested per model.
+- Not covered: electrolyte chemistry setup (the Elec Wizard), property parameter regression, Aspen's plots, costing (APEA), Energy Analyzer, Dynamics, EO mode, and custom Fortran/ACM models.
 - New blocks are placed wherever Aspen puts them. The server doesn't arrange the flowsheet drawing.
 - Tested on one machine: Windows 11, Aspen Plus V14, English locale. The dialog watchdog matches English dialog titles.
 - The log is in `logs\server.log`.

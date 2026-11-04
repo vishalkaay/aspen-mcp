@@ -153,11 +153,12 @@ function Set-AspFlowValue($n, $value, [string]$basis) {
 $script:DeleteRoots = @{
     block = '\Data\Blocks'; stream = '\Data\Streams'
     'design-spec' = '\Data\Flowsheeting Options\Design-Spec'; sensitivity = '\Data\Model Analysis Tools\Sensitivity'
+    calculator = '\Data\Flowsheeting Options\Calculator'; 'reaction-set' = '\Data\Reactions\Reactions'
 }
 
 Register-McpTool -Name 'aspen_delete' `
-    -Description 'Delete a block, stream, design spec or sensitivity study.' `
-    -Properties @{ kind = (P-Enum 'What to delete' @('block', 'stream', 'design-spec', 'sensitivity')); name = (P-Str 'Name') } `
+    -Description 'Delete a block, stream, design spec, sensitivity study, calculator or reaction set.' `
+    -Properties @{ kind = (P-Enum 'What to delete' @('block', 'stream', 'design-spec', 'sensitivity', 'calculator', 'reaction-set')); name = (P-Str 'Name') } `
     -Required @('kind', 'name') `
     -Handler {
         param($a)

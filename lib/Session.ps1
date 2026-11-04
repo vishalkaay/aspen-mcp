@@ -218,6 +218,8 @@ function Get-AspSummary {
     $o.streams = Get-AspChildNames '\Data\Streams'
     $ds = Get-AspChildNames '\Data\Flowsheeting Options\Design-Spec'; if ($ds.Count) { $o.design_specs = $ds }
     $se = Get-AspChildNames '\Data\Model Analysis Tools\Sensitivity'; if ($se.Count) { $o.sensitivities = $se }
+    $ca = Get-AspChildNames '\Data\Flowsheeting Options\Calculator'; if ($ca.Count) { $o.calculators = $ca }
+    $rx = Get-AspChildNames '\Data\Reactions\Reactions'; if ($rx.Count) { $o.reaction_sets = $rx }
     # Informational: Aspen marks e.g. unreviewed binary parameters as incomplete but still runs.
     $inc = Get-IncompleteInput
     if ($inc.Count) { $o.incomplete_input = [object[]]$inc }

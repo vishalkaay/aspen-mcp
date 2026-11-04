@@ -122,6 +122,61 @@ Register-McpTool -Name 'aspen_sensitivity' `
         Get-ResultRows $out "sensitivity $name"
     }
 
+$script:CalcRoot = '\Data\Flowsheeting Options\Calculator'
+
+Register-McpTool -Name 'aspen_calculator' `
+    -Description 'Create (or replace) a Calculator block: Fortran that reads (imports) and writes (exports) flowsheet variables. define names the variables (references as in aspen_design_spec); read lists the ones only sampled, write the ones it changes. fortran is the code, one statement per line; lines without leading spaces get the 6-space Fortran indent. Execution: when = BEFORE/AFTER plus block (runs before/after that block), or FIRST/LAST. Example: define {"FE": {"type":"MOLE-FLOW","stream":"F","component":"ETOH"}, "FA": {...}}, read ["FE"], write ["FA"], fortran "FA = 2.0 * FE", when "BEFORE", block "R1".' `
+    -Properties @{
+        name = (P-Str 'Calculator ID, e.g. C-1'); define = (P-Map 'Map of variable name -> reference')
+        read = (P-StrList 'Variables only read (import)'); write = (P-StrList 'Variables the code changes (export)')
+        fortran = (P-Str 'Fortran statements, newline-separated'); declarations = (P-Str 'Optional Fortran declarations')
+        when = (P-Enum 'Execution point' @('BEFORE', 'AFTER', 'FIRST', 'LAST')); block = (P-Str 'Unit operation block for BEFORE/AFTER')
+    } `
+    -Required @('name', 'define', 'fortran') `
+    -Handler {
+        param($a)
+        $name = $a.name.ToUpper()
+        New-AnalysisObject $script:CalcRoot $name
+        $b = "$script:CalcRoot\$name\Input"
+        $out = @(Add-DefineRows $b $a.define)
+        foreach ($pair in @(@('FORTRAN_EXEC', $a.fortran), @('FORTRAN_DEC', $a.declarations))) {
+            if (-not $pair[1]) { continue }
+            $lines = @("$($pair[1])" -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | ForEach-Object { if ($_ -match '^\S' -and $_ -notmatch '^[Cc!]\s') { "      $_" } else { $_ } })
+            $out += @(Set-AspListRows "$b\$($pair[0])" $lines)
+        }
+        if ($a.read) { $out += @(Set-AspListRows "$b\READ_VAR" @($a.read | ForEach-Object { "$_".ToUpper() })) }
+        if ($a.write) { $out += @(Set-AspListRows "$b\WRITE_VAR" @($a.write | ForEach-Object { "$_".ToUpper() })) }
+        if ($a.when) {
+            $m = [ordered]@{ "$b\WHEN" = $a.when }
+            if (@('BEFORE', 'AFTER') -contains $a.when) {
+                if (-not $a.block) { throw "when=$($a.when) needs block" }
+                $m["$b\BLOCK_TYPE"] = 'BLOCK'; $m["$b\BLK_ID"] = $a.block.ToUpper()
+            }
+            $out += @(Set-AspValues $m)
+        }
+        Get-ResultRows $out "calculator $name"
+    }
+
+function Get-CalculatorResult([string]$name) {
+    $b = "$script:CalcRoot\$name\Output"
+    $o = [ordered]@{ name = $name; kind = 'calculator' }
+    $ids = Read-AspVector "$b\VARID" $null $null
+    if (-not $ids -or $ids.Count -eq 0) { $o.note = 'no results (run the simulation)'; return $o }
+    $rd = Read-AspVector "$b\READ_VAL" $null $null; $wr = Read-AspVector "$b\WRITE_VAL" $null $null; $un = Read-AspVector "$b\VAR_UNIT" $null $null
+    $vars = [ordered]@{}
+    foreach ($k in $ids.Keys) {
+        $v = [ordered]@{}
+        if ($rd -and $null -ne $rd[$k]) { $v.read = $rd[$k] }
+        if ($wr -and $null -ne $wr[$k]) { $v.written = $wr[$k] }
+        if ($un -and $un[$k]) { $v.units = $un[$k] }
+        $vars["$($ids[$k])"] = $v
+    }
+    $o.variables = $vars
+    $st = Get-AspValue (Find-AspNode "$b\BLKSTAT"); if ($null -ne $st) { $o.status = $st }
+    $err = Get-OutputLines "$b\PER_ERROR"; if ($err.Count -and $err[0] -ne '0') { $o.messages = [object[]]$err }
+    $o
+}
+
 function Get-OutputLines([string]$path) {
     $o = @()
     $n = Find-AspNode $path
@@ -186,14 +241,15 @@ function Get-SensitivityResult([string]$name) {
 }
 
 Register-McpTool -Name 'aspen_analysis_results' `
-    -Description 'Results of design specs (final value of the vary variable, achieved spec value, status) and sensitivity studies (the full table, one row per case with the vary and tabulated values). Omit name to get every design spec and sensitivity in the simulation.' `
-    -Properties @{ name = (P-Str 'Design spec or sensitivity ID (default all)') } `
+    -Description 'Results of design specs (final value of the vary variable, achieved spec value, status), sensitivity studies (the full table, one row per case with the vary and tabulated values) and calculators (values read and written). Omit name to get all of them.' `
+    -Properties @{ name = (P-Str 'Design spec, sensitivity or calculator ID (default all)') } `
     -Handler {
         param($a)
         $out = @()
-        $ds = Get-AspChildNames $script:DsRoot; $se = Get-AspChildNames $script:SensRoot
+        $ds = Get-AspChildNames $script:DsRoot; $se = Get-AspChildNames $script:SensRoot; $ca = Get-AspChildNames $script:CalcRoot
         foreach ($n in $ds) { if (-not $a.name -or $n -ieq $a.name) { $out += Get-DesignSpecResult $n } }
         foreach ($n in $se) { if (-not $a.name -or $n -ieq $a.name) { $out += Get-SensitivityResult $n } }
-        if ($a.name -and $out.Count -eq 0) { throw "No design spec or sensitivity named $($a.name)" }
+        foreach ($n in $ca) { if (-not $a.name -or $n -ieq $a.name) { $out += Get-CalculatorResult $n } }
+        if ($a.name -and $out.Count -eq 0) { throw "No design spec, sensitivity or calculator named $($a.name)" }
         New-JsonResult ([object[]]$out)
     }

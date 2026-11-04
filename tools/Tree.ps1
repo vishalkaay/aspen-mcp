@@ -89,6 +89,45 @@ Register-McpTool -Name 'aspen_find' `
         New-JsonResult ([ordered]@{ hits = [object[]]$hits; nodes_scanned = $visited })
     }
 
+$script:DescribeRoots = @('\Data\Blocks\{0}\Input', '\Data\Streams\{0}\Input', '\Data\Reactions\Reactions\{0}\Input',
+    '\Data\Flowsheeting Options\Design-Spec\{0}\Input', '\Data\Flowsheeting Options\Calculator\{0}\Input',
+    '\Data\Model Analysis Tools\Sensitivity\{0}\Input')
+
+Register-McpTool -Name 'aspen_describe_inputs' `
+    -Description 'Explain the input fields of any block, stream, reaction set, design spec, calculator or sensitivity (or any node path) with Aspen''s own help text and the allowed values of option fields. Use it to learn how to specify a model that has no dedicated tool (Flash2, Pump, Compr, HeatX, RGibbs ...), then write the fields with aspen_set. filter is a regex on field names and help text (e.g. "temp|pres|spec"). specified_only hides empty fields.' `
+    -Properties @{
+        target = (P-Str 'Block/stream/reaction/spec name (e.g. H1) or a node path (e.g. \Data\Blocks\H1\Input)')
+        filter = (P-Str 'Regex on field name or help text'); specified_only = (P-Bool 'Only fields that have a value')
+        depth = (P-Int 'Levels to descend into keyed fields such as FEED_STAGE\<stream> (default 2)'); max = (P-Int 'Maximum fields (default 150)')
+    } `
+    -Required @('target') `
+    -Handler {
+        param($a)
+        $path = $a.target
+        if ($path -notmatch '^\\') {
+            $path = $null
+            foreach ($f in $script:DescribeRoots) { $p = $f -f $a.target; if ($null -ne (Find-AspNode $p)) { $path = $p; break } }
+            if (-not $path) { throw "Nothing named $($a.target) (block, stream, reaction set, design spec, calculator or sensitivity)" }
+        }
+        $n = Get-AspNode $path
+        $d = if ($a.depth) { [int]$a.depth } else { 2 }
+        $max = if ($a.max) { [int]$a.max } else { 150 }
+        $rows = [AspCom]::Describe($n, $path.TrimEnd('\'), $d, $a.filter, [bool]$a.specified_only, $max)
+        $out = @()
+        foreach ($r in $rows) {
+            $o = [ordered]@{ field = $r[0].Substring($path.TrimEnd('\').Length + 1) }
+            if ($r[1] -ne '') { $o.value = ConvertTo-AspOutput $r[1] }
+            if ($r[2]) { $o.units = $r[2] }
+            if ($r[3]) { $o.options = $r[3] }
+            if ($r[4]) { $o.help = $r[4] }
+            if ($r[5]) { $o.keys = $r[5] }
+            $out += $o
+        }
+        $res = [ordered]@{ path = $path; fields = [object[]]$out }
+        if ($out.Count -ge $max) { $res.note = "Stopped at $max fields; narrow with filter." }
+        New-JsonResult $res
+    }
+
 Register-McpTool -Name 'aspen_add_row' `
     -Description 'Add a labelled row to a table-style node: component list (\Data\Components\Specifications\Input\TYPE), heater curve keys (...\Input\INDEP_VAR), etc. Then set the new cells with aspen_set.' `
     -Properties @{ path = (P-Str 'Table node'); label = (P-Str 'Row label') } `

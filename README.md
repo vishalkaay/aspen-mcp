@@ -34,6 +34,8 @@ For a manual setup, add this to `claude_desktop_config.json`:
 
 > Open my_plant.bkp from my project folder, list the RadFrac columns and their reboiler duties.
 
+> Build a 15-stage methanol/water column, then add a design spec that adjusts the reflux ratio for 99 mol% methanol in the distillate, and a sensitivity of reboiler duty against reflux ratio from 1 to 3.
+
 > Take a screenshot of the flowsheet.
 
 ## Tools
@@ -42,9 +44,11 @@ For a manual setup, add this to `claude_desktop_config.json`:
 |---|---|
 | Session | `aspen_new` (blank, unit set METCBAR/MET/SI/ENG), `aspen_open` (.bkp/.apw/.apwz, as a working copy), `aspen_info`, `aspen_save`, `aspen_close` |
 | Variable tree | `aspen_get` (one or many paths, with units), `aspen_set` (one, or a `{path: value}` map), `aspen_list`, `aspen_tree` (non-empty leaves of a subtree), `aspen_find` (regex on node names), `aspen_add_row` (table rows) |
-| Flowsheet | `aspen_flowsheet` (topology), `aspen_add_components`, `aspen_remove_component`, `aspen_set_property_method`, `aspen_set_units`, `aspen_add_block`, `aspen_add_stream` (material/heat/work), `aspen_connect`, `aspen_disconnect`, `aspen_delete`, `aspen_set_stream` |
-| Run | `aspen_run` (starts, waits up to 40 s, then poll), `aspen_status`, `aspen_stop`, `aspen_reinit`, `aspen_report` (search the .rep) |
-| Results | `aspen_streams` (T, P, vapour fraction, flows, components), `aspen_block_results` (scalar outputs with units) |
+| Flowsheet | `aspen_flowsheet` (topology), `aspen_add_components` (fluids or solids), `aspen_remove_component`, `aspen_set_property_method`, `aspen_set_units`, `aspen_add_block`, `aspen_add_stream` (material/heat/work), `aspen_connect`, `aspen_disconnect`, `aspen_delete`, `aspen_set_stream` (mole/mass/std-volume flows or fractions, any substream) |
+| Models | `aspen_radfrac` (stages, condenser, reboiler, feed stages, pressure, the two operating specs), `aspen_rstoic` (conditions plus reactions by conversion or extent) |
+| Analysis | `aspen_design_spec`, `aspen_sensitivity`, `aspen_analysis_results` (design-spec outcome, sensitivity table) |
+| Run | `aspen_run` (starts, waits up to 40 s, then poll; says so when Aspen skips the run for incomplete input), `aspen_status`, `aspen_stop`, `aspen_reinit`, `aspen_report` (search the .rep) |
+| Results | `aspen_streams` (T, P, vapour fraction, flows, components, solid substreams), `aspen_block_results` (scalar outputs with units), `aspen_column_results` (duties, ratios, stage T/P/L/V and x/y profiles) |
 | View | `aspen_screenshot` (PNG of the Aspen window) |
 | Files | `aspen_list_files`, `aspen_read_file` (text files: .bkp, .rep, .csv ...; read-only, no Aspen needed) |
 
@@ -58,6 +62,9 @@ Everything in Aspen is a node in the variable tree, so anything without a dedica
 | Block spec | `\Data\Blocks\C1\Input\NSTAGE`, `...\Input\BASIS_RR` (string `"2"`) |
 | Block result | `\Data\Blocks\H1\Output\QCALC`, `\Data\Blocks\C1\Output\REB_DUTY` |
 | Run status | `\Data\Results Summary\Run-Status\Output\PER_ERROR` (0 = no errors) |
+| RStoic reaction 1 | `\Data\Blocks\R1\Input\COEF\1\<comp>\MIXED` (reactants, negative), `...\COEF1\1\...` (products), `...\CONV\1` |
+| Design spec | `\Data\Flowsheeting Options\Design-Spec\DS-1\Input\EXPR1`, `...\Output\FINAL_VAL\1` |
+| Sensitivity table | `\Data\Model Analysis Tools\Sensitivity\S-1\Output\SENSVAR\<case>\<column>` |
 
 ## Configuration (`config.json`)
 
@@ -83,6 +90,12 @@ powershell -ExecutionPolicy Bypass -File tests\protocol.tests.ps1
 powershell -ExecutionPolicy Bypass -File tests\live.tests.ps1
 ```
 
+```bash
+powershell -ExecutionPolicy Bypass -File tests\models.tests.ps1
+```
+
+`models.tests.ps1` takes about 3 minutes. It builds a methanol/water RadFrac column and an esterification RStoic from scratch, then checks the column profile, the reactor conversion, a design spec (99 mol% methanol by reflux ratio), a sensitivity study and a solids (CISOLID) stream.
+
 Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on the `.bkp` reading tests in `protocol.tests.ps1`. `-ProtectedFile <file.bkp>` (or `ASPEN_MCP_PROTECTED_FILE`) turns on the protection tests in `live.tests.ps1`; the file must be inside a folder listed in `protected_paths`.
 
 `protocol.tests.ps1` takes about 2 seconds and doesn't start Aspen. `live.tests.ps1` takes about 2 minutes and opens Aspen windows. It builds a water/methanol heater from scratch, runs it and checks the mass balance and duty. It also takes a screenshot, saves the case, and opens a file from a protected folder to confirm nothing there gets written. Both scripts drive `server.ps1` as a child process over stdio, the same way Claude does.
@@ -91,6 +104,9 @@ Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on th
 
 - **Layout.** `server.ps1` handles the stdio loop. `lib\Protocol.ps1` holds the JSON-RPC handling and tool registry. `lib\Com.ps1` has the COM helpers. `lib\Session.ps1` covers the instance lifecycle, protection, unit sets and run status. `lib\Dialogs.ps1` is the dialog watchdog, and `tools\*.ps1` registers the tools.
 - **Value and Name.** PowerShell's COM adapter can't read or write Aspen's `Value` and `Name`, which are parameterized properties. All access goes through `InvokeMember`.
+- **Speed.** `InvokeMember` called from PowerShell costs about 20 ms per call, because the COM adapter rebuilds type information for every object. A RadFrac input dump took minutes. The calls now go through a small compiled C# class (`AspCom` in `lib\Com.ps1`), at about 1 ms each, and whole-subtree walks run inside it.
+- **Flow basis.** A feed's `BASIS` (MOLE-FLOW, MASS-FLOW ...) doesn't change the units of its flow cells. Mass flows are written with `SetValueUnitAndBasis`, in the unit set's mass-flow unit.
+- **Skipped runs.** With required input missing, Aspen silently doesn't run. The server compares the run stamp and lists incomplete objects (input status bit `0x40` of attribute 12).
 - **Unrolled return values.** Functions that return a COM collection must use `return ,$x`, or PowerShell unrolls it, and an empty one becomes `$null`.
 - **Wrapped arguments.** Cmdlet output is wrapped in `PSObject`, and COM rejects it with `DISP_E_TYPEMISMATCH`, so every argument is unwrapped first.
 - **Alias names.** Helper names must not collide with built-in aliases such as `sv`, `gp`, `sp` or `set`. Aliases win over functions.
@@ -104,6 +120,9 @@ Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on th
 - The server opens its own Aspen window. It can't attach to an Aspen window you opened yourself, because Aspen doesn't register in the running-object table. Close the file there first, then use `aspen_open`.
 - It handles one simulation at a time per server.
 - Large flowsheets can take minutes to converge from a cold start. Use `aspen_run` with a longer `wait_seconds`, or poll `aspen_status`.
+- Dedicated tools cover RadFrac, RStoic, design specs and sensitivities. Other models (RCSTR/RPlug kinetics, HeatX, calculators, optimization) are set through `aspen_set` on their input paths.
+- New blocks are placed wherever Aspen puts them. The server doesn't arrange the flowsheet drawing.
+- Tested on one machine: Windows 11, Aspen Plus V14, English locale. The dialog watchdog matches English dialog titles.
 - The log is in `logs\server.log`.
 
 ## License

@@ -19,7 +19,7 @@ try {
     Assert-True ($r.isError -and $r.text -match 'replace=true') 'a second aspen_new without replace is refused' $r.text
 
     $r = Invoke-Tool 'aspen_add_components' @{ components = @('WATER', 'MEOH=METHANOL', 'ZZQX=NOT-A-REAL-COMPOUND') }
-    $c = @($r.json)
+    $c = @($r.json.components)
     Assert-True ($c[0].found -and $c[0].formula -eq 'H2O') 'WATER found in the databank (H2O)' $r.text
     Assert-True ($c[1].found -and $c[1].id -eq 'MEOH') 'MEOH=METHANOL found' $r.text
     Assert-True (-not $c[2].found) 'a bogus compound is reported as not found' $r.text

@@ -1,27 +1,5 @@
 # Variable-tree tools: generic read/write access to every Aspen input and result.
-
-function Format-AspLeaf($n, [string]$path) {
-    $v = Get-AspValue $n
-    $u = Get-AspUnits $n
-    $s = "$path = $v"
-    if ($u) { $s += " [$u]" }
-    $s
-}
-
-function Add-AspTreeLines($n, [string]$path, [int]$depth, [int]$maxDepth, [bool]$nonEmpty, $lines, [int]$limit) {
-    if ($lines.Count -ge $limit) { return }
-    $kids = Get-AspChildren $n
-    if ($kids.Count -eq 0) {
-        $v = Get-AspValue $n
-        if (-not $nonEmpty -or ($null -ne $v -and "$v" -ne '')) { [void]$lines.Add((Format-AspLeaf $n $path)) }
-        return
-    }
-    if ($depth -ge $maxDepth) { [void]$lines.Add("$path\ (+$($kids.Count) children)"); return }
-    foreach ($k in $kids) {
-        if ($lines.Count -ge $limit) { [void]$lines.Add('...(limit reached)'); return }
-        Add-AspTreeLines $k ("$path\" + (Get-AspName $k)) ($depth + 1) $maxDepth $nonEmpty $lines $limit
-    }
-}
+# Subtree walks (aspen_tree, aspen_find) run inside the compiled AspCom class; see lib\Com.ps1.
 
 Register-McpTool -Name 'aspen_get' `
     -Description 'Read one or more variable-tree nodes. Returns value, units and child count. Example: \Data\Streams\FEED\Output\TEMP_OUT\MIXED' `
@@ -72,7 +50,7 @@ Register-McpTool -Name 'aspen_list' `
             $r = [ordered]@{ name = (Get-AspName $e) }
             $v = Get-AspValue $e; if ($null -ne $v -and "$v" -ne '') { $r.value = $v }
             $u = Get-AspUnits $e; if ($u) { $r.units = $u }
-            $k = (Get-AspChildren $e).Count; if ($k -gt 0) { $r.children = $k }
+            $k = Get-AspChildCount $e; if ($k -gt 0) { $r.children = $k }
             $rows += $r
         }
         New-JsonResult ([object[]]$rows)
@@ -87,9 +65,7 @@ Register-McpTool -Name 'aspen_tree' `
         $n = Get-AspNode $a.path
         $d = if ($a.depth) { [int]$a.depth } else { 3 }
         $lim = if ($a.max_lines) { [int]$a.max_lines } else { 400 }
-        $lines = New-Object System.Collections.ArrayList
-        Add-AspTreeLines $n $a.path.TrimEnd('\') 0 $d (-not [bool]$a.include_empty) $lines $lim
-        New-TextResult ($lines -join "`n")
+        New-TextResult ([AspCom]::Tree($n, $a.path.TrimEnd('\'), $d, (-not [bool]$a.include_empty), $lim))
     }
 
 Register-McpTool -Name 'aspen_find' `
@@ -100,24 +76,15 @@ Register-McpTool -Name 'aspen_find' `
         param($a)
         $maxD = if ($a.depth) { [int]$a.depth } else { 4 }
         $max = if ($a.max) { [int]$a.max } else { 50 }
-        $q = New-Object System.Collections.Queue
-        $q.Enqueue(@($a.root.TrimEnd('\'), 0))
-        $hits = @(); $visited = 0; $t0 = Get-Date
-        while ($q.Count -gt 0 -and $hits.Count -lt $max -and $visited -lt 30000 -and ((Get-Date) - $t0).TotalSeconds -lt 25) {
-            $item = $q.Dequeue(); $p = $item[0]; $d = $item[1]
-            $n = Find-AspNode $p; if ($null -eq $n) { continue }
-            foreach ($k in (Get-AspChildren $n)) {
-                $visited++
-                $nm = Get-AspName $k; $kp = "$p\$nm"
-                if ($nm -match $a.pattern) {
-                    $r = [ordered]@{ path = $kp }
-                    $v = Get-AspValue $k; if ($null -ne $v -and "$v" -ne '') { $r.value = $v }
-                    $u = Get-AspUnits $k; if ($u) { $r.units = $u }
-                    $hits += $r
-                    if ($hits.Count -ge $max) { break }
-                }
-                if ($d + 1 -lt $maxD) { $q.Enqueue(@($kp, ($d + 1))) }
-            }
+        $root = Get-AspNode $a.root
+        $visited = 0
+        $found = [AspCom]::Search($root, $a.root.TrimEnd('\'), $a.pattern, $maxD, $max, 200000, 25000, [ref]$visited)
+        $hits = @()
+        foreach ($h in $found) {
+            $r = [ordered]@{ path = $h[0] }
+            if ($h[1] -ne '') { $r.value = ConvertTo-AspOutput $h[1] }
+            if ($h[2]) { $r.units = $h[2] }
+            $hits += $r
         }
         New-JsonResult ([ordered]@{ hits = [object[]]$hits; nodes_scanned = $visited })
     }

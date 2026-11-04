@@ -57,8 +57,9 @@ $script:Instructions = @'
 Drives a live, visible Aspen Plus V14 window over COM.
 - Start with aspen_new (blank, choose a unit set) or aspen_open (.bkp/.apw/.apwz). Files are opened as working copies in the server workspace by default; protected folders are never written to.
 - Everything is a node in the variable tree, e.g. \Data\Streams\FEED\Input\TEMP\MIXED, \Data\Blocks\B1\Input\PRES, \Data\Blocks\B1\Output\QCALC. Explore with aspen_list / aspen_tree / aspen_find, then aspen_get / aspen_set. Values are in the simulation's unit set; aspen_get returns the units.
-- Build: aspen_add_components, aspen_set_property_method, aspen_add_block, aspen_add_stream, aspen_connect, aspen_set_stream. Block specs use aspen_set on \Data\Blocks\<name>\Input\... (aspen_tree on that path shows the keys).
-- aspen_run starts the solver and waits briefly; if it reports running=true, poll aspen_status. Then read aspen_streams, aspen_block_results, aspen_run_messages, or aspen_report.
+- Build: aspen_add_components, aspen_set_property_method, aspen_add_block, aspen_add_stream, aspen_connect, aspen_set_stream. Columns: aspen_radfrac; stoichiometric reactors: aspen_rstoic. Other block specs use aspen_set on \Data\Blocks\<name>\Input\... (aspen_tree on that path shows the keys).
+- Analysis: aspen_design_spec and aspen_sensitivity create them; after a run, aspen_analysis_results reads them.
+- aspen_run starts the solver and waits briefly; if it reports running=true, poll aspen_status. Then read aspen_streams, aspen_block_results, aspen_column_results, aspen_analysis_results, or aspen_report.
 - aspen_screenshot returns an image of the Aspen window. aspen_flowsheet returns the topology as text.
 - Save with aspen_save (defaults to the working copy).
 '@

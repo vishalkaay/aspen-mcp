@@ -1,7 +1,13 @@
 # Running the solver. Engine.Run2 returns immediately, so runs are started, then polled.
 
+# Run ID + date/time of the last run (the ID alone is reused across runs of one session).
+function Get-RunStamp {
+    $o = '\Data\Results Summary\Run-Status\Output'
+    "$(Get-AspValue (Find-AspNode "$o\RUNID"))|$(Get-AspValue (Find-AspNode "$o\ITDATE"))|$(Get-AspValue (Find-AspNode "$o\SPDATE"))"
+}
+
 Register-McpTool -Name 'aspen_run' `
-    -Description 'Run the simulation. Waits up to wait_seconds (default from config, 40) and returns status, run codes and problem messages. If running=true comes back, poll aspen_status. reinit=true clears previous results first (cold start).' `
+    -Description 'Run the simulation. Waits up to wait_seconds (default from config, 40) and returns status, run codes and problem messages. If running=true comes back, poll aspen_status. reinit=true clears previous results first (cold start). If Aspen skips the run because required input is missing, the result says so and lists the incomplete blocks/streams.' `
     -Properties @{ reinit = (P-Bool 'Reinitialize before running'); wait_seconds = (P-Int 'How long to wait for completion') } `
     -Handler {
         param($a)
@@ -9,6 +15,7 @@ Register-McpTool -Name 'aspen_run' `
         $eng = Get-ComProp $app 'Engine'
         if ([bool](Get-ComProp $eng 'IsRunning')) { throw 'A run is already in progress; use aspen_status or aspen_stop.' }
         if ($a.reinit) { [void](Invoke-ComMethod $app 'Reinit') }
+        $before = Get-RunStamp
         $wait = if ($a.wait_seconds) { [int]$a.wait_seconds } else { [int]$global:S.Config.run_wait_seconds }
         $global:S.RunStart = Get-Date
         [void](Invoke-ComMethod $eng 'Run2')
@@ -19,7 +26,18 @@ Register-McpTool -Name 'aspen_run' `
             if ([bool](Get-ComProp $eng 'IsRunning')) { $quiet = 0 } else { $quiet++ }
             Start-Sleep -Milliseconds 700
         }
-        New-JsonResult (Get-RunState)
+        $st = Get-RunState
+        # Aspen silently skips the run when required input is missing: the run stamp does not change.
+        # The stamp can also stay put across quick re-runs, so it only counts with incomplete
+        # flowsheet objects (Aspen runs despite e.g. unreviewed property parameters).
+        $inc = if (-not $st.running -and (Get-RunStamp) -eq $before) { Get-IncompleteInput } else { @() }
+        $blocking = @($inc | Where-Object { $_ -notin @('setup', 'components', 'properties') })
+        if ($blocking.Count -gt 0 -or ($inc.Count -gt 0 -and -not (Find-AspNode '\Data\Results Summary\Run-Status\Output'))) {
+            $r = New-JsonResult ([ordered]@{ running = $false; status = 'Aspen did not run: required input is incomplete. Complete these first (aspen_tree on their Input shows what is set).'; incomplete = [object[]]$inc })
+            $r.isError = $true
+            return $r
+        }
+        New-JsonResult $st
     }
 
 Register-McpTool -Name 'aspen_status' `

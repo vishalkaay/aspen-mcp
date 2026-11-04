@@ -32,24 +32,31 @@ Register-McpTool -Name 'aspen_flowsheet' `
     -Handler { param($a) New-JsonResult (Get-AspTopology ([bool]$a.all_ports)) }
 
 Register-McpTool -Name 'aspen_add_components' `
-    -Description 'Add conventional components from the databank. Each entry is "ID" (looked up by that name) or "ID=DATABANK-NAME", e.g. ["WATER", "MEOH=METHANOL", "AA=ACETIC-ACID"]. Reports whether Aspen found each one (formula filled in).' `
-    -Properties @{ components = (P-StrList 'Component entries') } `
+    -Description 'Add components from the databank. Each entry is "ID" (looked up by that name) or "ID=DATABANK-NAME", e.g. ["WATER", "MEOH=METHANOL", "AA=ACETIC-ACID"]. type CONV (default) for fluids, SOLID for conventional solids (e.g. "CACO3=CALCIUM-CARBONATE"). Adding a SOLID switches the global stream class to MIXCISLD so streams get a CISOLID substream. Reports whether Aspen found each one (formula filled in).' `
+    -Properties @{ components = (P-StrList 'Component entries'); type = (P-Enum 'Component type for these entries (default CONV)' @('CONV', 'SOLID')) } `
     -Required @('components') `
     -Handler {
         param($a)
+        $type = if ($a.type) { $a.type } else { 'CONV' }
         $out = @()
         foreach ($entry in @($a.components)) {
             $id, $db = ([string]$entry).Split('=', 2)
             $id = $id.Trim().ToUpper(); $db = if ($db) { $db.Trim().ToUpper() } else { $id }
-            $r = [ordered]@{ id = $id; databank_name = $db }
+            $r = [ordered]@{ id = $id; databank_name = $db; type = $type }
             if ($null -eq (Find-AspNode "$script:CompTable\TYPE\$id")) { [void](Add-AspRow "$script:CompTable\TYPE" $id) } else { $r.note = 'already present' }
-            Set-AspValue (Get-AspNode "$script:CompTable\TYPE\$id") 'CONV'
+            Set-AspValue (Get-AspNode "$script:CompTable\TYPE\$id") $type
             Set-AspValue (Get-AspNode "$script:CompTable\DBNAME1\$id") $db
             $r.formula = Get-AspValue (Find-AspNode "$script:CompTable\ANAME\$id")
             $r.found = ("$($r.formula)" -ne '')
             $out += $r
         }
-        New-JsonResult ([object[]]$out)
+        $res = [ordered]@{ components = [object[]]$out }
+        if ($type -eq 'SOLID') {
+            $sc = Get-AspNode '\Data\Setup\Global\Input\SCLASS'
+            if ("$(Get-AspValue $sc)" -eq 'CONVEN') { Set-AspValue $sc 'MIXCISLD' }
+            $res.stream_class = Get-AspValue $sc
+        }
+        New-JsonResult $res
     }
 
 Register-McpTool -Name 'aspen_remove_component' `
@@ -121,41 +128,83 @@ Register-McpTool -Name 'aspen_disconnect' `
         New-TextResult "Disconnected $($a.stream) from $($a.block).$($a.port)"
     }
 
+# Write a flow cell in the current input unit set's unit for MOLE/MASS/STDVOL flow.
+# SetValueUnitAndBasis takes a unit column index; the column of e.g. kg/hr is found by trying
+# columns until UnitString matches the unit set, then cached.
+$script:FlowUnitCols = @{}
+$script:FlowUnitTypes = @{ MOLE = 'MOLE-FLOW'; MASS = 'MASS-FLOW'; STDVOL = 'VOLUME-FLOW' }
+function Set-AspFlowValue($n, $value, [string]$basis) {
+    $v = ConvertTo-AspInput $value
+    $inset = Get-AspValue (Get-AspNode '\Data\Setup\Global\Input\INSET')
+    $target = Get-AspValue (Find-AspNode "\Data\Setup\Units-Sets\$inset\Unit-Types\$($script:FlowUnitTypes[$basis])")
+    $key = "$basis|$target"
+    if ($script:FlowUnitCols.ContainsKey($key)) {
+        [void](Invoke-ComMethod $n 'SetValueUnitAndBasis' @($v, [int16]$script:FlowUnitCols[$key], "$basis-FLOW", $true))
+        return
+    }
+    for ($col = 1; $col -le 40; $col++) {
+        try { [void](Invoke-ComMethod $n 'SetValueUnitAndBasis' @($v, [int16]$col, "$basis-FLOW", $true)) } catch { break }
+        if ("$(Get-AspUnits $n)" -eq "$target") { $script:FlowUnitCols[$key] = $col; return }
+    }
+    [void](Invoke-ComMethod $n 'SetValueUnitAndBasis' @($v, [int16]1, "$basis-FLOW", $true))
+    Write-McpLog "no unit column matches $target for $basis flow; used $(Get-AspUnits $n)"
+}
+
+$script:DeleteRoots = @{
+    block = '\Data\Blocks'; stream = '\Data\Streams'
+    'design-spec' = '\Data\Flowsheeting Options\Design-Spec'; sensitivity = '\Data\Model Analysis Tools\Sensitivity'
+}
+
 Register-McpTool -Name 'aspen_delete' `
-    -Description 'Delete a block or a stream.' `
-    -Properties @{ kind = (P-Enum 'What to delete' @('block', 'stream')); name = (P-Str 'Name') } `
+    -Description 'Delete a block, stream, design spec or sensitivity study.' `
+    -Properties @{ kind = (P-Enum 'What to delete' @('block', 'stream', 'design-spec', 'sensitivity')); name = (P-Str 'Name') } `
     -Required @('kind', 'name') `
     -Handler {
         param($a)
-        $root = if ($a.kind -eq 'block') { '\Data\Blocks' } else { '\Data\Streams' }
+        $root = $script:DeleteRoots[$a.kind]
+        [void](Get-AspNode "$root\$($a.name)")
         Remove-AspElement $root $a.name
         New-TextResult "Deleted $($a.kind) $($a.name)"
     }
 
 Register-McpTool -Name 'aspen_set_stream' `
-    -Description 'Specify a feed stream: temperature and pressure plus component flows, in the simulation units (aspen_info shows the unit set). flow_basis MOLE (default), MASS or STDVOL. Components must already exist.' `
+    -Description 'Specify a feed stream: temperature and pressure plus component flows, in the simulation units (aspen_info shows the unit set). flow_basis MOLE (default), MASS or STDVOL. With total_flow, component_flows are fractions of that total instead. Components must already exist. substream MIXED (default) for fluids; CISOLID for conventional solids (after aspen_add_components with type SOLID) - call once per substream.' `
     -Properties @{
         name = (P-Str 'Stream name'); temperature = (P-Num 'Temperature'); pressure = (P-Num 'Pressure')
         flow_basis = (P-Enum 'Basis for component_flows' @('MOLE', 'MASS', 'STDVOL'))
-        component_flows = (P-Map 'Map of component ID -> flow, e.g. {"WATER": 100}')
+        component_flows = (P-Map 'Map of component ID -> flow (or fraction with total_flow), e.g. {"WATER": 100}')
+        total_flow = (P-Num 'Total flow; makes component_flows fractions')
+        substream = (P-Str 'Substream (default MIXED)')
     } `
     -Required @('name') `
     -Handler {
         param($a)
         $base = "\Data\Streams\$($a.name)\Input"
         [void](Get-AspNode $base)
+        $ss = if ($a.substream) { $a.substream.ToUpper() } else { 'MIXED' }
+        if ($null -eq (Find-AspNode "$base\TEMP\$ss")) {
+            throw "Stream $($a.name) has no $ss substream (has: $((Get-AspChildNames "$base\TEMP") -join ', ')). For CISOLID add a SOLID component first."
+        }
         $set = [ordered]@{}
-        if ($null -ne $a.temperature) { $set["$base\TEMP\MIXED"] = $a.temperature }
-        if ($null -ne $a.pressure) { $set["$base\PRES\MIXED"] = $a.pressure }
-        if ($a.flow_basis) { $set["$base\FLOWBASE\MIXED"] = $a.flow_basis }
+        if ($null -ne $a.temperature) { $set["$base\TEMP\$ss"] = $a.temperature }
+        if ($null -ne $a.pressure) { $set["$base\PRES\$ss"] = $a.pressure }
+        # BASIS holds the entry mode (MOLE-FLOW, MASS-FRAC ...); FLOWBASE is only the basis of TOTFLOW.
+        $fb = if ($a.flow_basis) { $a.flow_basis } else { 'MOLE' }
+        $fractions = ($null -ne $a.total_flow)
+        if ($fractions) { $set["$base\BASIS\$ss"] = "$fb-FRAC"; $set["$base\FLOWBASE\$ss"] = $fb }
+        elseif ($a.flow_basis -or $a.component_flows) { $set["$base\BASIS\$ss"] = "$fb-FLOW" }
+        $out = @(Set-AspValues $set)
+        # Flow cells keep their unit row (mole flow by default) whatever BASIS says, so each flow is
+        # written with SetValueUnitAndBasis in the unit set's unit for that basis.
+        $cells = [ordered]@{}
+        if ($fractions) { $cells["$base\TOTFLOW\$ss"] = $a.total_flow }
         $flows = ConvertTo-Map $a.component_flows
-        foreach ($c in $flows.Keys) { $set["$base\FLOW\MIXED\$($c.ToUpper())"] = $flows[$c] }
-        $out = @()
-        foreach ($p in $set.Keys) {
+        foreach ($c in $flows.Keys) { $cells["$base\FLOW\$ss\$($c.ToUpper())"] = $flows[$c] }
+        foreach ($p in $cells.Keys) {
             $n = Find-AspNode $p
             if ($null -eq $n) { $out += [ordered]@{ path = $p; error = 'node not found (is the component defined?)' }; continue }
             try {
-                Set-AspValue $n $set[$p]
+                if ($fractions -and $p -notmatch '\\TOTFLOW\\') { Set-AspValue $n $cells[$p] } else { Set-AspFlowValue $n $cells[$p] $fb }
                 $r = [ordered]@{ path = $p; value = (Get-AspValue $n) }
                 $u = Get-AspUnits $n; if ($u) { $r.units = $u }
                 $out += $r

@@ -104,6 +104,45 @@ function Get-RunStatusCodes {
     return $o
 }
 
+# Input completeness: attribute 12 (HAP_COMPSTATUS) is a bit mask; 0x40 = input incomplete.
+# Aspen will not run at all while anything is incomplete, so this explains a run that produced nothing.
+function Test-AspIncomplete($n) { $s = [AspCom]::Attr($n, 12); return ($null -ne $s -and "$s" -ne '' -and ([int64]$s -band 0x40) -ne 0) }
+function Get-IncompleteInput {
+    $items = @()
+    if (-not (Test-AspIncomplete (Get-AspNode '\Data'))) { return ,$items }
+    foreach ($g in @(@('setup', '\Data\Setup'), @('components', '\Data\Components'), @('properties', '\Data\Properties'))) {
+        $n = Find-AspNode $g[1]; if ($n -and (Test-AspIncomplete $n)) { $items += $g[0] }
+    }
+    foreach ($g in @(@('block', '\Data\Blocks'), @('stream', '\Data\Streams'), @('design-spec', '\Data\Flowsheeting Options\Design-Spec'),
+            @('calculator', '\Data\Flowsheeting Options\Calculator'), @('sensitivity', '\Data\Model Analysis Tools\Sensitivity'))) {
+        $root = Find-AspNode $g[1]; if ($null -eq $root) { continue }
+        foreach ($k in ([AspCom]::Children($root))) {
+            if (Test-AspIncomplete $k) {
+                $m = [AspCom]::Attr($k, 6)
+                $items += if ($g[0] -eq 'block' -and $m) { "block $([AspCom]::Name($k)) ($m)" } else { "$($g[0]) $([AspCom]::Name($k))" }
+            }
+        }
+    }
+    if ($items.Count -eq 0) { $items += 'unknown (check the Aspen window: incomplete forms are marked red)' }
+    return ,$items
+}
+
+# When blocks finish with warnings or errors, PER_ERROR holds message lines instead of a code
+# ("The following Convergence blocks were / completed with warnings: / $OLVER01").
+function Get-RunSummaryMessages {
+    $n = Find-AspNode '\Data\Results Summary\Run-Status\Output\PER_ERROR'
+    if ($null -eq $n -or (Get-AspChildCount $n) -eq 0) { return ,@() }
+    $vals = [AspCom]::ChildValues($n)
+    $msgs = @(); $cur = ''
+    foreach ($k in $vals.Keys) {
+        $s = "$($vals[$k])".Trim()
+        if (-not $s) { if ($cur) { $msgs += $cur; $cur = '' }; continue }
+        $cur = if ($cur) { "$cur $s" } else { $s }
+    }
+    if ($cur) { $msgs += $cur }
+    return ,$msgs
+}
+
 # Export the .rep report to the workspace; returns its path, or $null when Aspen has no results yet.
 function Export-AspReport {
     $dir = Join-Path $global:S.Workspace 'reports'
@@ -146,6 +185,7 @@ function Get-RunState([bool]$withReport = $true) {
     $o = [ordered]@{ running = $running }
     if ($global:S.RunStart) { $o.elapsed_s = [int]((Get-Date) - $global:S.RunStart).TotalSeconds }
     $o.codes = Get-RunStatusCodes
+    if (-not $running) { $sm = Get-RunSummaryMessages; if ($sm.Count) { $o.summary = [object[]]$sm } }
     if (-not $running -and $withReport) {
         $rep = Export-AspReport
         if ($rep) {
@@ -154,7 +194,11 @@ function Get-RunState([bool]$withReport = $true) {
             $o.messages = $m.messages
             Remove-Item -LiteralPath $rep -Force -ErrorAction SilentlyContinue
         } else {
-            $o.status = 'No results yet (run the simulation).'
+            $inc = Get-IncompleteInput
+            if ($inc.Count) {
+                $o.status = 'Input is incomplete, so Aspen cannot run. Complete these first.'
+                $o.incomplete = [object[]]$inc
+            } else { $o.status = 'No results yet (run the simulation).' }
         }
     }
     return $o
@@ -172,6 +216,11 @@ function Get-AspSummary {
     $o.components = Get-AspChildNames '\Data\Components\Specifications\Input\TYPE'
     $o.blocks = Get-AspChildNames '\Data\Blocks'
     $o.streams = Get-AspChildNames '\Data\Streams'
+    $ds = Get-AspChildNames '\Data\Flowsheeting Options\Design-Spec'; if ($ds.Count) { $o.design_specs = $ds }
+    $se = Get-AspChildNames '\Data\Model Analysis Tools\Sensitivity'; if ($se.Count) { $o.sensitivities = $se }
+    # Informational: Aspen marks e.g. unreviewed binary parameters as incomplete but still runs.
+    $inc = Get-IncompleteInput
+    if ($inc.Count) { $o.incomplete_input = [object[]]$inc }
     $o.run_codes = Get-RunStatusCodes
     return $o
 }

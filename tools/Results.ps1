@@ -7,8 +7,21 @@ function Read-AspWithUnits([string]$path, $units, [string]$key) {
     return (ConvertTo-Double (Get-AspValue $n))
 }
 
+function Read-AspComponentFlows([string]$path, $units, [bool]$includeZero) {
+    $comp = [ordered]@{}
+    $cn = Find-AspNode $path
+    if ($null -eq $cn) { return $comp }
+    foreach ($e in (Get-AspChildren $cn)) {
+        $v = ConvertTo-Double (Get-AspValue $e)
+        if ($null -eq $v) { continue }
+        if ($v -ne 0 -or $includeZero) { $comp[(Get-AspName $e)] = [math]::Round($v, 6) }
+        if (-not $units.Contains('components')) { $u = Get-AspUnits $e; if ($u) { $units['components'] = $u } }
+    }
+    return $comp
+}
+
 Register-McpTool -Name 'aspen_streams' `
-    -Description 'Stream results table: T, P, vapour fraction, total mass and mole flow, and non-zero component flows (basis mass or mole). Heat streams report their duty. Omit names for all streams. Units are listed once.' `
+    -Description 'Stream results table: T, P, vapour fraction, total mass and mole flow, and non-zero component flows (basis mass or mole) of the MIXED substream. Streams with solids also get a substreams entry (e.g. CISOLID with its T, mass flow and components), and mass_flow_total over all substreams. Heat streams report their duty. Omit names for all streams. Units are listed once.' `
     -Properties @{ names = (P-StrList 'Stream names (default all)'); basis = (P-Enum 'Component flow basis' @('mass', 'mole')); include_zero = (P-Bool 'Keep zero component flows') } `
     -Handler {
         param($a)
@@ -32,17 +45,22 @@ Register-McpTool -Name 'aspen_streams' `
                 $r.vfrac = Read-AspWithUnits "$o\VFRAC_OUT\MIXED" $null 'vfrac'
                 $r.mass_flow = Read-AspWithUnits "$o\MASSFLMX\MIXED" $units 'mass_flow'
                 $r.mole_flow = Read-AspWithUnits "$o\MOLEFLMX\MIXED" $units 'mole_flow'
-                $comp = [ordered]@{}
-                $cn = Find-AspNode "$o\$basis\MIXED"
-                if ($null -ne $cn) {
-                    foreach ($e in (Get-AspChildren $cn)) {
-                        $v = ConvertTo-Double (Get-AspValue $e)
-                        if ($null -eq $v) { continue }
-                        if ($v -ne 0 -or $a.include_zero) { $comp[(Get-AspName $e)] = [math]::Round($v, 6) }
-                        if (-not $units.Contains('components')) { $u = Get-AspUnits $e; if ($u) { $units['components'] = $u } }
+                $r.components = Read-AspComponentFlows "$o\$basis\MIXED" $units ([bool]$a.include_zero)
+                # Solids streams carry extra substreams (CISOLID, NC) plus a $TOTAL pseudo-substream.
+                $all = Get-AspChildNames "$o\MASSFLMX"
+                $subs = @($all | Where-Object { $_ -ne 'MIXED' -and $_ -ne '$TOTAL' })
+                if ($subs.Count -gt 0) {
+                    $sm = [ordered]@{}
+                    foreach ($ss in $subs) {
+                        $x = [ordered]@{}
+                        $x.T = Read-AspWithUnits "$o\TEMP_OUT\$ss" $units 'T'
+                        $x.mass_flow = Read-AspWithUnits "$o\MASSFLMX\$ss" $units 'mass_flow'
+                        $x.components = Read-AspComponentFlows "$o\$basis\$ss" $units ([bool]$a.include_zero)
+                        $sm[$ss] = $x
                     }
+                    $r.substreams = $sm
+                    $r.mass_flow_total = Read-AspWithUnits "$o\MASSFLMX\`$TOTAL" $units 'mass_flow'
                 }
-                $r.components = $comp
                 if ($null -eq $r.T -and $null -eq $r.mass_flow) { $r.note = 'no results (not run yet?)' }
             }
             $rows += $r
@@ -62,7 +80,7 @@ Register-McpTool -Name 'aspen_block_results' `
         foreach ($e in (Get-AspChildren $out)) {
             $nm = Get-AspName $e
             if ($a.filter -and $nm -notmatch $a.filter) { continue }
-            $k = (Get-AspChildren $e).Count
+            $k = Get-AspChildCount $e
             if ($k -gt 0) { $vectors[$nm] = $k; continue }
             $v = Get-AspValue $e
             if ($null -eq $v -or "$v" -eq '') { continue }

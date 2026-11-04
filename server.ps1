@@ -36,7 +36,7 @@ $stdout.AutoFlush = $true
 $stdin = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), $enc)
 
 $global:S = @{
-    Version   = '1.0.0'
+    Version   = '1.1.0'
     Root      = $root
     Config    = $config
     Workspace = $ws
@@ -51,8 +51,8 @@ $global:S = @{
 }
 
 foreach ($f in 'lib\Com.ps1', 'lib\Protocol.ps1', 'lib\Dialogs.ps1', 'lib\Session.ps1',
-    'tools\Session.ps1', 'tools\Tree.ps1', 'tools\Flowsheet.ps1', 'tools\Run.ps1',
-    'tools\Results.ps1', 'tools\View.ps1', 'tools\Files.ps1') {
+    'tools\Session.ps1', 'tools\Tree.ps1', 'tools\Flowsheet.ps1', 'tools\Models.ps1', 'tools\Analysis.ps1',
+    'tools\Run.ps1', 'tools\Results.ps1', 'tools\View.ps1', 'tools\Files.ps1') {
     . (Join-Path $root $f)
 }
 

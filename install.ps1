@@ -40,13 +40,32 @@ foreach ($cfg in $configs) {
     Write-Host "'$Name' $what $cfg (backup: $backup)"
 }
 
+# Claude Code (CLI, and the Code tab of the desktop app) reads MCP servers from ~/.claude.json,
+# not from claude_desktop_config.json.
 $claude = Get-Command claude -ErrorAction SilentlyContinue
+$cc = Join-Path $env:USERPROFILE '.claude.json'
 if ($claude) {
     $ErrorActionPreference = 'Continue'   # native stderr must not abort the script
     & claude mcp remove --scope user $Name
     if (-not $Uninstall) { & claude mcp add --scope user $Name -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File $server }
-} else {
-    Write-Host "Claude Code CLI not found. To add the server there later run:"
-    Write-Host "  claude mcp add --scope user $Name -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$server`""
+} elseif ((Test-Path $cc) -and -not $Uninstall) {
+    # The file is large and owned by Claude Code, so only the one key is inserted as text (no full rewrite).
+    $raw = [IO.File]::ReadAllText($cc)
+    $j = $raw | ConvertFrom-Json
+    if ($j.PSObject.Properties.Name -contains 'mcpServers') {
+        if ($j.mcpServers.PSObject.Properties.Name -contains $Name) { Write-Host "'$Name' already registered in $cc" }
+        else { Write-Host "$cc already has other MCP servers; add '$Name' there by hand (see README)." }
+    } else {
+        $backup = "$cc.bak-" + (Get-Date).ToString('yyyyMMdd-HHmmss')
+        Copy-Item $cc $backup
+        $e = [ordered]@{ type = 'stdio' } + $entry
+        $i = $raw.IndexOf('{')
+        $new = $raw.Substring(0, $i + 1) + "`n  `"mcpServers`": {`"$Name`": " + (ConvertTo-Json $e -Depth 5 -Compress) + '},' + $raw.Substring($i + 1)
+        [void]($new | ConvertFrom-Json)   # validate before writing
+        [IO.File]::WriteAllText($cc, $new, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "'$Name' registered for Claude Code in $cc (backup: $backup)"
+    }
+} elseif ($Uninstall) {
+    Write-Host "To remove it from Claude Code, delete mcpServers.$Name from $cc."
 }
 if (-not $Uninstall) { Write-Host "Done. Fully quit and reopen Claude Desktop, then start a new chat or session." }

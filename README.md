@@ -13,7 +13,14 @@ Claude talks to the server over MCP (stdio). The server drives Aspen through its
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-This registers the server as `aspen-plus` in every Claude Desktop config it finds, backing each one up first. If the Claude Code CLI is installed, it registers the server there too. Then fully quit Claude Desktop, reopen it, and start a **new** chat or session. MCP tools load when a session starts.
+This registers the server as `aspen-plus` in two places, backing each file up first:
+
+- every Claude Desktop config it finds, for the Chat tab;
+- Claude Code's `~/.claude.json`, for the Code tab of the desktop app and the CLI. It uses `claude mcp add` when the CLI is installed.
+
+Then start a **new** session or chat, because MCP tools load when a session starts. If the tools don't appear, fully quit and reopen Claude Desktop.
+
+Claude Desktop rewrites `claude_desktop_config.json` while it runs, and can drop entries added at the same time. If the Chat tab loses the server, quit the app and run `install.ps1` again.
 
 To remove it, run `install.ps1 -Uninstall`.
 

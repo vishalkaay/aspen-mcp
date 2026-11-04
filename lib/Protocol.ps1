@@ -1,7 +1,7 @@
 # MCP over stdio: newline-delimited JSON-RPC 2.0. stdout carries protocol messages ONLY,
 # so nothing in this server may use Write-Host / Write-Output to the console; diagnostics go to the log file.
 
-$script:SupportedProtocols = @('2025-06-18', '2025-03-26', '2024-11-05')
+$script:SupportedProtocols = @('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
 
 function Write-McpLog([string]$msg) {
     try {
@@ -54,7 +54,7 @@ function ConvertTo-Map($o) {
 }
 
 $script:Instructions = @'
-Drives a live, visible Aspen Plus V14 window over COM.
+Drives a live, visible Aspen Plus window over COM (the newest installed version, V11 or later).
 - Start with aspen_new (blank, choose a unit set) or aspen_open (.bkp/.apw/.apwz). Files are opened as working copies in the server workspace by default; protected folders are never written to.
 - Everything is a node in the variable tree, e.g. \Data\Streams\FEED\Input\TEMP\MIXED, \Data\Blocks\B1\Input\PRES, \Data\Blocks\B1\Output\QCALC. Explore with aspen_list / aspen_tree / aspen_find, then aspen_get / aspen_set. Values are in the simulation's unit set; aspen_get returns the units.
 - Build: aspen_add_components, aspen_set_property_method, aspen_add_block, aspen_add_stream, aspen_connect, aspen_set_stream. Columns: aspen_radfrac; stoichiometric reactors: aspen_rstoic; kinetics: aspen_reactions + aspen_kinetic_reactor (RCSTR/RPlug). Any other model: aspen_describe_inputs on the block (Aspen's help text and allowed values per field), then aspen_set.

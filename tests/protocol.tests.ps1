@@ -14,7 +14,9 @@ try {
     Assert-True ($init.result.serverInfo.name -eq 'aspen-plus') 'serverInfo.name'
     Assert-True ([string]$init.result.instructions -match 'variable tree') 'instructions present'
     $old = Invoke-Mcp 'initialize' @{ protocolVersion = '1999-01-01' }
-    Assert-True ($old.result.protocolVersion -eq '2025-06-18') 'unknown protocol version falls back to latest'
+    Assert-True ($old.result.protocolVersion -eq '2025-11-25') "unknown protocol version falls back to latest ($($old.result.protocolVersion))"
+    $new = Invoke-Mcp 'initialize' @{ protocolVersion = '2025-11-25' }
+    Assert-True ($new.result.protocolVersion -eq '2025-11-25') 'the 2025-11-25 protocol used by current Claude clients is accepted'
 
     Send-McpRaw '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     $ping = Invoke-Mcp 'ping'

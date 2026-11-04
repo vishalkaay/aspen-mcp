@@ -1,71 +1,98 @@
-# Registers (or removes) the Aspen Plus MCP server in Claude Desktop, and in Claude Code if its CLI is installed.
-#   powershell -ExecutionPolicy Bypass -File install.ps1             # install / update
-#   powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall  # remove
-# Every config file is backed up next to itself before it is changed. Restart Claude Desktop afterwards.
-param([switch]$Uninstall, [string]$Name = 'aspen-plus')
+# Installs the Aspen Plus MCP server for Claude: Claude Desktop (Chat tab) and Claude Code (the
+# desktop app's Code tab and the CLI).
+#   powershell -ExecutionPolicy Bypass -File install.ps1              # install / update
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall   # remove
+# Every config file is backed up next to itself before it is changed, and only the "aspen-plus"
+# entry is touched. Start a new Claude session afterwards (MCP servers load when a session starts).
+param(
+    [switch]$Uninstall,
+    [string]$Name = 'aspen-plus',
+    [string[]]$DesktopConfig,      # override: Claude Desktop config file(s) to edit (tests)
+    [string]$ClaudeCodeConfig      # override: Claude Code config file to edit (tests)
+)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\JsonEdit.ps1')
+. (Join-Path $PSScriptRoot 'lib\Detect.ps1')
+
+function Write-Step([string]$s, [string]$color = 'Gray') { Write-Host $s -ForegroundColor $color }
+
 $server = Join-Path $PSScriptRoot 'server.ps1'
 $entry = [ordered]@{
+    type    = 'stdio'
     command = 'powershell.exe'
     args    = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $server)
 }
+$entryJson = ConvertTo-Json $entry -Depth 5 -Compress
 
-# Claude Desktop keeps its config in %APPDATA%\Claude, or under %LOCALAPPDATA%\Claude-Data\<id> in newer builds.
-$configs = @()
-$classic = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
-if (Test-Path $classic) { $configs += $classic }
-$configs += @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Claude-Data') -Filter 'claude_desktop_config.json' -Recurse -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object FullName)
-if ($configs.Count -eq 0 -and -not $Uninstall) {
-    [void](New-Item -ItemType Directory -Force (Split-Path $classic))
-    '{}' | Set-Content $classic -Encoding ascii
-    $configs += $classic
+# Write $text to $path after validating it, keeping a timestamped backup of the old file.
+function Save-Config([string]$path, [string]$text, [scriptblock]$verify) {
+    $parsed = $text | ConvertFrom-Json
+    if (-not (& $verify $parsed)) { throw "Refusing to write $path : the edit did not produce the expected result" }
+    if (Test-Path $path) { Copy-Item $path ("$path.bak-" + (Get-Date).ToString('yyyyMMdd-HHmmss')) }
+    else { [void](New-Item -ItemType Directory -Force -Path (Split-Path $path)) }
+    [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false)))
 }
 
-foreach ($cfg in $configs) {
-    $backup = "$cfg.bak-" + (Get-Date).ToString('yyyyMMdd-HHmmss')
-    Copy-Item $cfg $backup
-    $raw = Get-Content $cfg -Raw
-    $j = if ([string]::IsNullOrWhiteSpace($raw)) { [pscustomobject]@{} } else { $raw | ConvertFrom-Json }
-    if (-not ($j.PSObject.Properties.Name -contains 'mcpServers')) { $j | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) }
+function Update-Config([string]$path, [string]$label) {
+    $raw = if (Test-Path $path) { [IO.File]::ReadAllText($path) } else { '' }
     if ($Uninstall) {
-        $j.mcpServers.PSObject.Properties.Remove($Name)
-        $what = 'removed from'
+        $new = Remove-JsonSectionEntry $raw 'mcpServers' $Name
+        if ($new -eq $raw) { Write-Step "  $label : not registered ($path)"; return }
+        Save-Config $path $new { param($j) -not ($j.mcpServers -and ($j.mcpServers.PSObject.Properties.Name -contains $Name)) }
+        Write-Step "  $label : removed ($path)" 'Green'
     } else {
-        $j.mcpServers | Add-Member -NotePropertyName $Name -NotePropertyValue ([pscustomobject]$entry) -Force
-        $what = 'registered in'
+        $new = Set-JsonSectionEntry $raw 'mcpServers' $Name $entryJson
+        if ($new -eq $raw) { Write-Step "  $label : already up to date ($path)" 'Green'; return }
+        Save-Config $path $new { param($j) $j.mcpServers.$Name.args[-1] -eq $server }
+        Write-Step "  $label : registered ($path)" 'Green'
     }
-    [IO.File]::WriteAllText($cfg, ($j | ConvertTo-Json -Depth 50), (New-Object Text.UTF8Encoding($false)))
-    [void](Get-Content $cfg -Raw | ConvertFrom-Json)   # fail loudly if the result is not valid JSON
-    Write-Host "'$Name' $what $cfg (backup: $backup)"
 }
 
-# Claude Code (CLI, and the Code tab of the desktop app) reads MCP servers from ~/.claude.json,
-# not from claude_desktop_config.json.
-$claude = Get-Command claude -ErrorAction SilentlyContinue
-$cc = Join-Path $env:USERPROFILE '.claude.json'
-if ($claude) {
-    $ErrorActionPreference = 'Continue'   # native stderr must not abort the script
-    & claude mcp remove --scope user $Name
-    if (-not $Uninstall) { & claude mcp add --scope user $Name -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File $server }
-} elseif ((Test-Path $cc) -and -not $Uninstall) {
-    # The file is large and owned by Claude Code, so only the one key is inserted as text (no full rewrite).
-    $raw = [IO.File]::ReadAllText($cc)
-    $j = $raw | ConvertFrom-Json
-    if ($j.PSObject.Properties.Name -contains 'mcpServers') {
-        if ($j.mcpServers.PSObject.Properties.Name -contains $Name) { Write-Host "'$Name' already registered in $cc" }
-        else { Write-Host "$cc already has other MCP servers; add '$Name' there by hand (see README)." }
-    } else {
-        $backup = "$cc.bak-" + (Get-Date).ToString('yyyyMMdd-HHmmss')
-        Copy-Item $cc $backup
-        $e = [ordered]@{ type = 'stdio' } + $entry
-        $i = $raw.IndexOf('{')
-        $new = $raw.Substring(0, $i + 1) + "`n  `"mcpServers`": {`"$Name`": " + (ConvertTo-Json $e -Depth 5 -Compress) + '},' + $raw.Substring($i + 1)
-        [void]($new | ConvertFrom-Json)   # validate before writing
-        [IO.File]::WriteAllText($cc, $new, (New-Object Text.UTF8Encoding($false)))
-        Write-Host "'$Name' registered for Claude Code in $cc (backup: $backup)"
-    }
-} elseif ($Uninstall) {
-    Write-Host "To remove it from Claude Code, delete mcpServers.$Name from $cc."
+Write-Host ''
+Write-Host "Aspen Plus MCP server - $(if ($Uninstall) { 'uninstall' } else { 'install' })" -ForegroundColor Cyan
+
+if (-not $Uninstall) {
+    # Files from a downloaded ZIP carry a "from the internet" mark; clear it so PowerShell runs them quietly.
+    Get-ChildItem $PSScriptRoot -Recurse -File -Include *.ps1, *.json | Unblock-File -ErrorAction SilentlyContinue
+
+    Write-Step 'Checking this PC'
+    if ($PSVersionTable.PSVersion.Major -lt 5) { throw "Windows PowerShell 5.1 or newer is required (found $($PSVersionTable.PSVersion))." }
+    $ids = @(Get-AspProgIds)
+    if ($ids.Count -gt 0) { Write-Step "  found $(Get-AspVersionName $ids[0]) ($($ids[0]))" 'Green' }
+    else { Write-Step '  WARNING: Aspen Plus is not registered on this PC. The server installs, but cannot open simulations until Aspen Plus is installed.' 'Yellow' }
 }
-if (-not $Uninstall) { Write-Host "Done. Fully quit and reopen Claude Desktop, then start a new chat or session." }
+
+Write-Step 'Claude Desktop (Chat tab)'
+$desktop = @()
+if ($DesktopConfig) { $desktop = @($DesktopConfig | ForEach-Object { $_ -split ',' } | Where-Object { $_ }) }   # -File passes a list as one comma-joined string
+else {
+    $classic = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
+    if (Test-Path $classic) { $desktop += $classic }
+    $desktop += @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Claude-Data') -Filter 'claude_desktop_config.json' -Recurse -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object FullName)
+    if ($desktop.Count -eq 0 -and -not $Uninstall) { $desktop = @($classic) }
+}
+foreach ($cfg in $desktop) { Update-Config $cfg 'config' }
+
+Write-Step 'Claude Code (Code tab and CLI)'
+$cc = if ($ClaudeCodeConfig) { $ClaudeCodeConfig } else { Join-Path $env:USERPROFILE '.claude.json' }
+$cli = if ($ClaudeCodeConfig) { $null } else { Get-Command claude -ErrorAction SilentlyContinue }
+if ($cli) {
+    $ErrorActionPreference = 'Continue'   # native stderr must not abort the script
+    & claude mcp remove --scope user $Name 2>$null | Out-Null
+    if (-not $Uninstall) { & claude mcp add --scope user $Name -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File $server }
+    $ErrorActionPreference = 'Stop'
+} elseif ((Test-Path $cc) -or -not $Uninstall) {
+    Update-Config $cc 'user config'
+}
+
+Write-Host ''
+if ($Uninstall) {
+    Write-Host 'Done. Start a new Claude session for the change to take effect.' -ForegroundColor Cyan
+} else {
+    Write-Host 'Done. Next:' -ForegroundColor Cyan
+    Write-Host '  1. Start a NEW chat or Code session in Claude (MCP tools load at session start).'
+    Write-Host '     If the Aspen tools do not appear, fully quit Claude Desktop (tray icon > Quit) and reopen it.'
+    Write-Host '  2. Ask: "Start a new Aspen simulation with water and methanol" - an Aspen window opens.'
+    Write-Host '  Health check any time:  powershell -ExecutionPolicy Bypass -File check.ps1'
+}

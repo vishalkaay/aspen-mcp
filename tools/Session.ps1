@@ -7,7 +7,8 @@ Register-McpTool -Name 'aspen_new' `
         param($a)
         Assert-NoSession ([bool]$a.replace)
         $app = Start-AspInstance
-        [void](Invoke-ComMethod $app 'InitNew2')
+        try { [void](Invoke-ComMethod $app 'InitNew2') }
+        catch { Stop-FailedInstance $app; throw (Format-StartError $_) }
         $global:S.App = $app
         Show-AspInstance $app
         $us = if ($a.unit_set) { $a.unit_set } else { $global:S.Config.default_unit_set }
@@ -36,8 +37,8 @@ Register-McpTool -Name 'aspen_open' `
             if ($ext -eq '.apw') { [void](Invoke-ComMethod $app 'InitFromFile2' @($work)) }
             else { [void](Invoke-ComMethod $app 'InitFromArchive2' @($work)) }
         } catch {
-            try { [void](Invoke-ComMethod $app 'Quit') } catch {}
-            throw
+            Stop-FailedInstance $app
+            throw (Format-StartError $_)
         }
         $global:S.App = $app
         $global:S.Source = $src

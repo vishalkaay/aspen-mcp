@@ -7,8 +7,11 @@ function Test-AspSession {
 }
 
 function Start-AspInstance {
-    $t = [type]::GetTypeFromProgID($global:S.Config.progid)
-    if ($null -eq $t) { throw "COM class $($global:S.Config.progid) is not registered. Is Aspen Plus installed?" }
+    $progid = Resolve-AspProgId "$($global:S.Config.progid)"
+    $t = [type]::GetTypeFromProgID($progid)
+    if ($null -eq $t) { throw "Aspen Plus COM class $progid is not registered. Is Aspen Plus installed on this PC? (run check.ps1)" }
+    $global:S.ProgId = $progid
+    Write-McpLog "starting $(Get-AspVersionName $progid) ($progid)"
     $app = [Activator]::CreateInstance($t)
     Start-DialogWatch $app
     return ,$app
@@ -43,6 +46,23 @@ function Set-AspUnitSet([string]$name) {
         pressure    = Get-AspValue (Find-AspNode "\Data\Setup\Units-Sets\$name\Unit-Types\PRESSURE")
         mole_flow   = Get-AspValue (Find-AspNode "\Data\Setup\Units-Sets\$name\Unit-Types\MOLE-FLOW")
     }
+}
+
+# An instance whose InitNew2/InitFromArchive2 failed has no window; quit it (and kill it if that
+# fails) so it does not linger invisibly and hold an Aspen license.
+function Stop-FailedInstance($app) {
+    $procId = $null; try { $procId = [int](Get-ComProp $app 'ProcessId') } catch {}
+    try { [void](Invoke-ComMethod $app 'Quit') } catch {}
+    try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($app) } catch {}
+    if ($procId) { Start-Sleep -Milliseconds 500; Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }
+    [AspenDialogWatch]::Stop()
+}
+function Format-StartError($err) {
+    $m = Get-ErrorText $err
+    if ($m -match 'Unexpected Error') {
+        $m += ' - Aspen Plus could not start a simulation. This is usually licensing: check that Aspen Plus opens by hand, that a license is free, and that LSHOST (license server) is set in the system environment. Run check.ps1 -Aspen for a full diagnosis.'
+    }
+    return $m
 }
 
 function Show-AspInstance($app) {
@@ -211,6 +231,7 @@ function Get-AspSummary {
     $o.source_file = $global:S.Source
     $o.working_file = $global:S.Working
     try { $o.aspen_pid = [int](Get-ComProp $app 'ProcessId') } catch {}
+    if ($global:S.ProgId) { $o.aspen_version = Get-AspVersionName $global:S.ProgId }
     $o.unit_set = Get-AspValue (Find-AspNode '\Data\Setup\Global\Input\INSET')
     $o.property_method = Get-AspValue (Find-AspNode '\Data\Properties\Specifications\Input\GBASEOPSET')
     $o.components = Get-AspChildNames '\Data\Components\Specifications\Input\TYPE'

@@ -1,6 +1,6 @@
 {
-  "_help": "Copy to config.json and edit. Keys starting with _ are ignored. Paths may use %ENVVARS%. Relative paths are relative to this folder.",
-  "progid": "Apwn.Document.40.0",
+  "_help": "Optional. Copy to config.json and edit. Keys starting with _ are ignored. Paths may use %ENVVARS%. Relative paths are relative to this folder.",
+  "progid": "auto",
   "workspace": "workspace",
   "protected_paths": [
     "%USERPROFILE%\\Documents\\my-aspen-project"

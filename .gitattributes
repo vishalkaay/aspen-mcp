@@ -1,0 +1,6 @@
+# Windows-native project: keep CRLF in scripts on checkout, store LF in the repository.
+* text=auto
+*.ps1 text eol=crlf
+*.json text eol=crlf
+*.md text eol=lf
+*.png binary

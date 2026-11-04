@@ -105,3 +105,7 @@ Optional inputs: `-SampleBkp <file.bkp>` (or `ASPEN_MCP_SAMPLE_BKP`) turns on th
 - It handles one simulation at a time per server.
 - Large flowsheets can take minutes to converge from a cold start. Use `aspen_run` with a longer `wait_seconds`, or poll `aspen_status`.
 - The log is in `logs\server.log`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Aspen Plus is a product of AspenTech and needs its own license; this project is not affiliated with AspenTech.
